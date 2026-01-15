@@ -6,7 +6,7 @@ set -euo pipefail
 # USB hostdev attached (normal mode <-> product 0x5740, DFU mode <-> product 0xdf11).
 
 PROGNAME=$(basename "$0")
-VM_NAME=""
+VM_NAME="${VM_MSWIN:-}"
 DRY_RUN=0
 VERBOSE=0
 ENSURE_DETACHED=0
@@ -46,18 +46,17 @@ require_cmds() {
 }
 
 parse_args() {
-    if [[ "${#}" -eq 0 ]]; then usage; exit 1; fi
     while [[ "${#}" -gt 0 ]]; do
         case "${1}" in
-            -n|--name)          VM_NAME="$2"; shift 2           ;;
-            --dry-run)          DRY_RUN=1; shift                ;;
-            --ensure-detached)  ENSURE_DETACHED=1; shift        ;;
-            -v|--verbose)       VERBOSE=1; shift                ;;
-            -h|--help)          usage; exit 0                   ;;
-            *)                  die "Unknown argument: ${1}"    ;;
+            -n|--name)          VM_NAME="${2}"; shift 2                 ;;
+            --dry-run)          DRY_RUN=1; shift                        ;;
+            --ensure-detached)  ENSURE_DETACHED=1; shift                ;;
+            -v|--verbose)       VERBOSE=1; shift                        ;;
+            -h|--help)          usage; exit 0                           ;;
+            *)                  die "Unknown argument: ${1}\n$(usage)"  ;;
         esac
     done
-    [[ -n "${VM_NAME}" ]] || die "VM name is required (-n VM_NAME)"
+    [[ -n "${VM_NAME}" ]] || die "VM name must be specified by option argument or environment variable VM_MSWIN.\n$(usage)"
 }
 
 wrap_cmd() {
@@ -108,7 +107,7 @@ get_ws500_host_dev() {
     wrap_cmd stdout stderr rc lsusb -d "${WS500_VENDOR_ID}:"
     if [[ "${rc}" -eq 0 || ( "${rc}" -eq 1 && -z "${stderr}" ) ]]; then
         if [[ $(printf '%s\n' "${stdout}" | wc -l) -gt 1 ]]; then
-            die "Multiple WS500 devices detected on host:\n${stdout}\nUnable to process."
+            die "Multiple WS500 devices detected on host:\n${stdout}\nUnable to process"
         else
             printf '%s\n' "${stdout}"
         fi
@@ -185,21 +184,21 @@ detach_ws500_vm_hostdev() {
     local hostdev_xml stdout stderr rc
     hostdev_xml=$(get_ws500_vm_dev_xml)
     if [[ -z "${hostdev_xml}" ]]; then
-        log "No WS500 vm hostdev found to detach from VM ${VM_NAME}."
+        log "No WS500 vm hostdev found to detach from VM ${VM_NAME}"
         return 0
     fi
     log "Found WS500 hostdev attached to VM ${VM_NAME}:\n${hostdev_xml}"
 
     if [[ "${DRY_RUN}" -eq 1 ]]; then
-        info "DRY-RUN: Will not detach hostdev."
+        info "DRY-RUN: Will not detach hostdev"
     else
         wrap_cmd stdout stderr rc virsh detach-device "${VM_NAME}" --live --file <(printf '%s\n' "${hostdev_xml}")
         [[ -z "${stdout}" ]] || log "virsh detach-device: ${stdout}"
         [[ -z "${stderr}" ]] || log "virsh detach-device: ${stderr}"
         if [[ "${rc}" -eq 0 ]]; then
-            log "Detached hostdev."
+            log "Detached hostdev"
         else
-            err "Failed to detach hostdev."
+            err "Failed to detach hostdev"
             return 1
         fi
     fi
@@ -215,51 +214,55 @@ main() {
     vm_ws500_dev_xml=$(get_ws500_vm_dev_xml)
 
     if [[ -z "${ws500_host_dev}" ]]; then
-        info "No WS500 detected on host."
+        info "No WS500 detected on host"
         if [[ "${ENSURE_DETACHED}" -eq 1 ]]; then
             info "Ensuring no WS500 hostdev is attached to VM ${VM_NAME}..."
             if [[ -z "${vm_ws500_dev_xml}" ]]; then
-                info "No WS500 hostdev is attached."
+                info "No WS500 hostdev is attached"
             else
                 info "Found WS500 hostdev attached:\n${vm_ws500_dev_xml}"
                 if detach_ws500_vm_hostdev ; then
-                    info "Successfully detached it."
+                    info "Successfully detached it"
                 else
-                    die "Failed to detach it."
+                    die "Failed to detach it"
                 fi
             fi
         fi
     else
-        info "WS500 detected on host."
+        info "WS500 detected on host"
         log "WS500 host device info: ${ws500_host_dev}"
         host_mode=$(get_ws500_host_dev_mode "${ws500_host_dev}")
         info "WS500 mode on host: ${host_mode}"
+        if ! virsh domstate "${VM_NAME}" | grep -q '^running$'; then
+            info "VM ${VM_NAME} is not running, nothing to sync"
+            exit 0
+        fi
         if [[ -z "${vm_ws500_dev_xml}" ]]; then
             info "VM ${VM_NAME} has no WS500 hostdev attached..."
             if attach_ws500_vm_hostdev "${host_mode}"; then
-                info "Successfully attached WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}."
+                info "Successfully attached WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}"
             else
-                die "Failed to attach WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}."
+                die "Failed to attach WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}"
             fi
         else
             log "VM ${VM_NAME} WS500 hostdev XML:\n${vm_ws500_dev_xml}"
             vm_mode=$(get_ws500_vm_dev_mode "${vm_ws500_dev_xml}")
-            info "VM ${VM_NAME} WS500 has hostdev attached for mode ${vm_mode}."
+            info "VM ${VM_NAME} WS500 has hostdev attached for mode ${vm_mode}"
             if [[ "${vm_mode}" != "${host_mode}" ]]; then
                 log "VM ${VM_NAME} has WS500 hostdev for incorrect mode ${vm_mode}, will detach it..."
                 if detach_ws500_vm_hostdev ; then
-                    log "Detached incorrect hostdev."
+                    log "Detached incorrect hostdev"
                 else
-                    die "Exiting due to failure to detach incorrect hostdev."
+                    die "Exiting due to failure to detach incorrect hostdev"
                 fi
                 if attach_ws500_vm_hostdev "${host_mode}"; then
-                    log "Successfully attached WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}."
+                    log "Successfully attached WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}"
                 else
-                    die "Exiting due to failure to attach WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}."
+                    die "Exiting due to failure to attach WS500 hostdev for mode ${host_mode} to VM ${VM_NAME}"
                 fi
-                info "Corrected VM ${VM_NAME} WS500 hostdev from ${vm_mode} to ${host_mode}."
+                info "Corrected VM ${VM_NAME} WS500 hostdev from ${vm_mode} to ${host_mode}"
             fi
-            info "WS500 in mode ${host_mode} is in sync on host and VM ${VM_NAME}."
+            info "WS500 in mode ${host_mode} is in sync on host and VM ${VM_NAME}"
         fi
     fi
 }
